@@ -1,31 +1,40 @@
 #!/system/bin/sh
-# Chroot Launcher with dan-home
+# Chroot launcher (Termux / Android root) - minimal, portable
 
 UBUNTUPATH="/data/local/tmp/chrootubuntu"
 DANHOME_OUTSIDE="/data/local/tmp/dan-home"
 
-# Ensure running as root
+# require root
 if [ "$(id -u)" != "0" ]; then
   exit 1
 fi
 
-# Check if rootfs exists
+# check rootfs
 if [ ! -d "$UBUNTUPATH" ]; then
   exit 1
 fi
 
-# Remount /data if needed
+# remount /data if possible
 mount -o remount,dev,suid /data 2>/dev/null || true
 
-# Create essential mountpoints
-for dir in dev sys proc dev/pts dev/shm tmp home sdcard run; do
-  mkdir -p "$UBUNTUPATH/$dir"
+# create mountpoints inside rootfs
+for d in dev sys proc dev/pts dev/shm tmp home sdcard run; do
+  mkdir -p "$UBUNTUPATH/$d"
 done
 
-# Create dan-home outside rootfs if not exists
+# ensure outside home exists
 mkdir -p "$DANHOME_OUTSIDE"
 
-# Main mounts
+# function cleanup mounts (best-effort)
+_cleanup() {
+  for m in dev/pts dev/shm dev sys proc sdcard home; do
+    umount -lf "$UBUNTUPATH/$m" 2>/dev/null || true
+  done
+}
+# trap EXIT to cleanup after leaving chroot
+trap _cleanup EXIT
+
+# perform mounts (ignore errors)
 mount --bind /dev "$UBUNTUPATH/dev" 2>/dev/null || true
 mount --bind /sys "$UBUNTUPATH/sys" 2>/dev/null || true
 mount --bind /proc "$UBUNTUPATH/proc" 2>/dev/null || true
@@ -33,18 +42,22 @@ mount -t devpts devpts "$UBUNTUPATH/dev/pts" 2>/dev/null || true
 mount -t tmpfs -o size=256M tmpfs "$UBUNTUPATH/dev/shm" 2>/dev/null || true
 mount --bind "$DANHOME_OUTSIDE" "$UBUNTUPATH/home" 2>/dev/null || true
 
-# Bind mount /sdcard if exists
+# bind /sdcard if available
 if [ -d /sdcard ]; then
   mount --bind /sdcard "$UBUNTUPATH/sdcard" 2>/dev/null || true
 fi
 
-# Set permissions for tmp
+# set tmp perms
 chmod 1777 "$UBUNTUPATH/tmp" 2>/dev/null || true
 
-# Enter chroot using /bin/sh
-chroot "$UBUNTUPATH" /bin/sh --login
+# choose shell inside chroot (prefer bash or zsh, fall back to sh)
+SHELL_IN="/bin/sh"
+if [ -x "$UBUNTUPATH/bin/bash" ]; then
+  SHELL_IN="/bin/bash"
+elif [ -x "$UBUNTUPATH/bin/zsh" ]; then
+  SHELL_IN="/bin/zsh"
+fi
 
-# Unmount all after exit
-for mnt in dev/pts dev/shm dev sys proc sdcard home; do
-  umount -lf "$UBUNTUPATH/$mnt" 2>/dev/null || true
-done
+# enter chroot (no --login option)
+chroot "$UBUNTUPATH" "$SHELL_IN"
+# when chroot exits, trap will run cleanup
